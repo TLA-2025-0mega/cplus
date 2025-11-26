@@ -676,29 +676,92 @@ TypeSpecifier* fieldDeclarationType(FieldDeclaration* fieldDeclarationType) {
 			&& strcmp(fieldDeclarationType->typeSpecifier->identifier, expressionComputedType->identifier)) {
 				logError(_logger, "type-checking: invalid field initialization");
 			}
-		} else {
-			logError(_logger, "type-checking: invalid field initialization");
+			return fieldDeclarationType->typeSpecifier;
 		}
+		logError(_logger, "type-checking: invalid field initialization");
 	}
+	return fieldDeclarationType->typeSpecifier;
 }
 
 TypeSpecifier* statementListType(Statement* statementList) {
-	while(statementList->next != NULL) statementList = statementList->next;
-	return statementType(statementList->typeSpecifier);
+	while(statementList->next != NULL) {
+		statementType(statementList);
+		statementList = statementList->next;
+	}
+	return statementType(statementList);
 }
 
 TypeSpecifier* statementType(Statement* statement) {
 	switch (statement->type) {
+		case INITIALIZED_DECLARATION_STATEMENT:
 		case DECLARATION_STATEMENT:
+			TypeSpecifier* initializationExpressionType = expressionType(statement->expression);
+			if(statement->expression != NULL) {
+				if(statement->typeSpecifier->type == initializationExpressionType->type) {
+					if(statement->typeSpecifier->type == IDENTIFIER_TYPE
+					&& strcmp(statement->typeSpecifier->identifier, initializationExpressionType->identifier) != 0) {
+						log_error(_logger, "type-checking: invalid field initialization");
+					}
+				}
+				log_error(_logger, "type-checking: invalid field initialization");
+			}
+			break;
+		case RETURN_STATEMENT:
+		case EXPRESSION_STATEMENT:
+			if(statement->expression != NULL)
+				expressionType(statement->expression);
+			break;
+		case DO_WHILE_STATEMENT:
+		case WHILE_STATEMENT:
+			if(statement->statementList != NULL) {
+				statementListType(statement->statementList);
+			}
+			if(statement->loopCondition != NULL) {
+				expressionType(statement->loopCondition);
+			}
+			break;
+		case FOR_STATEMENT:
+			if(statement->statementList != NULL) {
+				statementListType(statement->statementList);
+			}
+			if(statement->loopCondition != NULL) {
+				expressionType(statement->loopCondition);
+			}
+			if(statement->postIteration != NULL) {
+				expressionType(statement->postIteration);
+			}
+			break;
+		case IF_STATEMENT:
+			if(statement->condition != NULL) {
+				expressionType(statement->condition);
+			}
+			if(statement->statementList != NULL) {
+				statementListType(statement->statementList);
+			}
+			break;
+		case IF_ELSE_STATEMENT:
+			if(statement->condition != NULL) {
+				expressionType(statement->condition);
+			}
+			if(statement->statementList != NULL) {
+				statementListType(statement->statementList);
+			}
+			if(statement->elseStatementList != NULL) {
+				statementListType(statement->elseStatementList);
+			}
+			break;
+		case COMPOUND_STATEMENT:
+			if(statement->statementList != NULL) {
+				statementListType(statement->statementList);
+			}
+		default:
+			break;
 	}
+	return expressionType(statement->expression);
 }
 
-TypeSpecifier* expressionType() {
-
-}
-
-TypeSpecifier* statementType() {
-
+TypeSpecifier* expressionType(Expression* expression) {
+	
 }
 
 

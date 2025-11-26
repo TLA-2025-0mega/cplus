@@ -12,6 +12,11 @@ typedef struct {
     bool succeeded;
 } ComputationResult;
 
+typedef enum {
+    SUCCESS,
+    FAILURE
+} TypeCheckingResult;
+
 ModuleDestructor initializeCplusSemanticAnalyzerModule();
 
 

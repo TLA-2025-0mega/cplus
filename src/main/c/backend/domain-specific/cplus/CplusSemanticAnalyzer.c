@@ -84,7 +84,9 @@ ComputationResult executeSemanticalAnalysis(CompilerState * compilerState) {
 	}
 
 	Program *program = (Program *) _compilerState->abstractSyntaxtTree;
-	return computeProgram(program);
+	ComputationResult compilationResult = computeProgram(program);
+	if(programTypeCheck(program) == FAILURE) compilationResult.succeeded = false;
+	return compilationResult;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -623,4 +625,80 @@ ComputationResult computeArgumentList(ArgumentList * args) {
 	}
 	return _ok();
 }
+
+/* -------------------------------------------------------------------------- */
+/* type-checking	                                                          */
+/* -------------------------------------------------------------------------- */
+
+TypeCheckingResult programTypeCheck(Program* program) {
+	BlockDeclaration* currentBlock = program->blockDeclaration;
+	while(currentBlock != NULL) {
+		if(currentBlock->type == CLASS_BLOCK) {
+			methodDeclarationType(currentBlock->methodDeclaration);
+		} else {
+			classDeclarationType(currentBlock->classDeclaration);
+		}
+		currentBlock = currentBlock->next;
+	}
+
+}
+
+TypeSpecifier* classDeclarationType(ClassDeclaration* classDeclaration) {
+	if(classDeclaration->classBody != NULL) {
+		MemberDeclaration* currentMemberDeclaration = classDeclaration->classBody->memberList;
+		while(currentMemberDeclaration != NULL) {
+			if(currentMemberDeclaration->type == FIELD_MEMBER) {
+				fieldDeclarationType(currentMemberDeclaration->fieldDeclaration);
+			} else if(currentMemberDeclaration->type == METHOD_MEMBER) {
+				methodDeclarationType(currentMemberDeclaration->methodDeclaration);
+			}
+			currentMemberDeclaration = currentMemberDeclaration->next;
+		}
+	}
+}
+
+TypeSpecifier* methodDeclarationType(MethodDeclaration* methodDeclaration) {
+	TypeSpecifier* bodyReturnType = statementListType(methodDeclaration->statementList);
+	if(methodDeclaration->returnType->type == bodyReturnType->type) {
+		if(methodDeclaration->returnType->type == IDENTIFIER_TYPE &&
+		strcmp(methodDeclaration->returnType->identifier, bodyReturnType->identifier) != 0)
+			logError(_logger, "type-checking: method return type mismatch");
+		
+	}
+	logError(_logger, "type-checking: method return type mismatch");
+}
+
+TypeSpecifier* fieldDeclarationType(FieldDeclaration* fieldDeclarationType) {
+	TypeSpecifier* expressionComputedType = expressionType(fieldDeclarationType->initializationExpression);
+	if(fieldDeclarationType->initializationExpression != NULL) {
+		if(fieldDeclarationType->typeSpecifier->type == expressionComputedType->type) {
+			if(fieldDeclarationType->typeSpecifier->type == IDENTIFIER_TYPE
+			&& strcmp(fieldDeclarationType->typeSpecifier->identifier, expressionComputedType->identifier)) {
+				logError(_logger, "type-checking: invalid field initialization");
+			}
+		} else {
+			logError(_logger, "type-checking: invalid field initialization");
+		}
+	}
+}
+
+TypeSpecifier* statementListType(Statement* statementList) {
+	while(statementList->next != NULL) statementList = statementList->next;
+	return statementType(statementList->typeSpecifier);
+}
+
+TypeSpecifier* statementType(Statement* statement) {
+	switch (statement->type) {
+		case DECLARATION_STATEMENT:
+	}
+}
+
+TypeSpecifier* expressionType() {
+
+}
+
+TypeSpecifier* statementType() {
+
+}
+
 

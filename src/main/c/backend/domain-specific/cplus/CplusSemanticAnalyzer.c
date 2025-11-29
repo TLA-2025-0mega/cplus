@@ -818,7 +818,7 @@ ComputationResult computeExpression(Expression *expression) {
 				if(strcmp(expression->precedingExpression->rightExpression->identifier, methods->methodDeclaration->identifier) == 0) {
 					logDebugging(_logger, "Method %s found", methods->methodDeclaration->identifier);
 					isStatic = methods->methodDeclaration->isStatic;
-					found2 = 1;
+					found2 = true;
 				}
 				methods = methods->next;
 			}
@@ -829,6 +829,7 @@ ComputationResult computeExpression(Expression *expression) {
 
 			if(!found2) {
 				logError(_logger, "computeExpression: method %s not found", expression->precedingExpression->rightExpression->identifier);
+				allSucceeded = false;
 			}
 		}
 

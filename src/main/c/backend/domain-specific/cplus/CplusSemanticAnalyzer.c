@@ -24,10 +24,33 @@ static ComputationResult _ok() {
   return r;
 }
 
+typedef enum {
+	FIELD,
+	FUNCTION,
+	CLASS
+} EntryType;
+
 typedef struct SymbolTableValue {
-  TypeSpecifier * type; 
-  char * identifier;  
-  Expression * initialization;
+	char * identifier;
+	EntryType entryType;
+	union {
+		struct {
+			TypeSpecifier * type; 
+			union {
+				struct {
+					// Variable
+					Expression * initialization;
+					bool isStatic;
+				};
+				// Function
+				Parameter * parameters;
+			};
+		};
+		struct {
+			// Class
+			MemberDeclaration * methods;
+		};
+	};
 } SymbolTableValue;
 
 static int hash(void *str) {
@@ -115,10 +138,10 @@ ModuleDestructor initializeCplusSemanticAnalyzerModule() {
 ComputationResult computeProgram(Program * program);
 ComputationResult computeBlock(BlockDeclaration * blockDeclaration);
 ComputationResult computeClassDeclaration(ClassDeclaration * classDecl);
-ComputationResult computeClassBody(ClassBody * body);
-ComputationResult computeMemberDeclaration(MemberDeclaration * member);
+ComputationResult computeClassBody(ClassBody * body, char * identifier);
+ComputationResult computeMemberDeclaration(MemberDeclaration * member, char * classIdentifier);
 ComputationResult computeFieldDeclaration(FieldDeclaration * field);
-ComputationResult computeMethodDeclaration(MethodDeclaration * method);
+ComputationResult computeMethodDeclaration(MethodDeclaration * method, char* classIdentifier);
 ComputationResult computeStatement(Statement * statement);
 ComputationResult computeExpression(Expression * expression);
 ComputationResult computeFactor(Factor * factor);
@@ -128,9 +151,10 @@ ComputationResult computeParameterList(Parameter * params);
 ComputationResult executeSemanticalAnalysis(CompilerState * compilerState) {
 	logDebugging(_logger, "Executing Cplus semantic analyzer...");
 
-  _cs = compilerState;
-  _cs->scopeStack = createStack(sizeof(Scope*));
-  _cs->currentScope = pushNewScope();
+	_cs = compilerState;
+	_cs->scopeStack = createStack(sizeof(Scope*));
+	_cs->currentScope = pushNewScope();
+	_cs->globalTable = newHashMap();
 
 	Program *program = (Program *) _cs->abstractSyntaxtTree;
 	return computeProgram(program);
@@ -169,8 +193,9 @@ ComputationResult computeBlock(BlockDeclaration * blockDeclaration) {
 
 			case METHOD_BLOCK:
 				logDebugging(_logger, "Computing METHOD_BLOCK.");
-				if (!computeMethodDeclaration(current->methodDeclaration).succeeded)
+				if(!computeFunctionBlock(current->methodDeclaration).succeeded) {
 					allSucceeded = false;
+				}
 				break;
 
 			default:
@@ -180,6 +205,67 @@ ComputationResult computeBlock(BlockDeclaration * blockDeclaration) {
 		current = current->next;
     popAndDestroyScope();
 	}
+	return allSucceeded ? _ok() : _invalidComputation();
+}
+
+ComputationResult computeFunctionBlock(MethodDeclaration * function) {
+	logDebugging(_logger, "Computing function declaration...");
+
+ 	pushNewScope();
+	bool allSucceeded = true;
+
+	if (function == NULL) {
+		logError(_logger, "computeFunctionBlock: function is NULL.");
+		return _invalidComputation();
+	}
+
+	if (function->identifier != NULL)
+		logDebugging(_logger, "Function identifier: %s", function->identifier);
+	else
+		logError(_logger, "computeFunctionBlock: function has no identifier");
+
+	if (function->returnType != NULL) {
+		logDebugging(_logger, "function return type: %d", function->returnType->type);
+		if (function->returnType->type == IDENTIFIER_TYPE && function->returnType->identifier != NULL) {
+			if(hash_map_get(_cs->globalTable, &function->returnType->identifier) == NULL) {
+				logError(_logger, "computeFunctionBlock: unknow return type");
+				allSucceeded = false;
+			} 
+			logDebugging(_logger, "Function return type identifier: %s", function->returnType->identifier);
+		}
+	}
+
+	if (function->parameterList != NULL) {
+		if (!computeParameterList(function->parameterList).succeeded)
+			allSucceeded = false;
+	}
+
+	Statement *statement = function->statementList;
+	while (statement != NULL) {
+		if (!computeStatement(statement).succeeded)
+			allSucceeded = false;
+		statement = statement->next;
+	}
+
+	if (function->isStatic) logDebugging(_logger, "Function is static.");
+
+	char * key = function->identifier; 
+	if (hash_map_get(_cs->globalTable, &key) != NULL) {
+		logError(_logger, "Duplicate function: %s", function->identifier);
+		allSucceeded = false;
+	}
+	logDebugging(_logger, "Inserting new symbol in global scope");
+
+	SymbolTableValue value = {
+		.type = function->returnType,
+		.entryType = FUNCTION,
+		.identifier = function->identifier,
+		.parameters = function->parameterList
+	};
+
+	hash_map_put(_cs->globalTable, &key, &value);
+
+  	popAndDestroyScope();
 	return allSucceeded ? _ok() : _invalidComputation();
 }
 
@@ -198,10 +284,26 @@ ComputationResult computeClassDeclaration(ClassDeclaration * classDecl) {
 
 	logDebugging(_logger, "Class identifier: %s", classDecl->identifier);
 
-	return computeClassBody(classDecl->classBody);
+	// Add class to global symbol table
+	char * key = classDecl->identifier; 
+	if (hash_map_get(_cs->globalTable, &key) != NULL) {
+		logError(_logger, "Duplicate class: %s", classDecl->identifier);
+		return _invalidComputation();
+	}
+	logDebugging(_logger, "Inserting new class on global scope");
+
+	SymbolTableValue value = {
+		.entryType = CLASS,
+		.identifier = classDecl->identifier
+	};
+
+	hash_map_put(_cs->globalTable, &key, &value);
+
+	// Compute class body
+	return computeClassBody(classDecl->classBody, classDecl->identifier);
 }
 
-ComputationResult computeClassBody(ClassBody * body) {
+ComputationResult computeClassBody(ClassBody * body, char * classIdentifier) {
 	logDebugging(_logger, "Computing class body...");
 
 	if (body == NULL) {
@@ -211,7 +313,7 @@ ComputationResult computeClassBody(ClassBody * body) {
 	bool allSucceeded = true;
 	MemberDeclaration *member = body->memberList;
 	while (member != NULL) {
-		if (!computeMemberDeclaration(member).succeeded)
+		if (!computeMemberDeclaration(member, classIdentifier).succeeded)
 			allSucceeded = false;
 		member = member->next;
 	}
@@ -219,7 +321,7 @@ ComputationResult computeClassBody(ClassBody * body) {
 	return allSucceeded ? _ok() : _invalidComputation();
 }
 
-ComputationResult computeMemberDeclaration(MemberDeclaration * member) {
+ComputationResult computeMemberDeclaration(MemberDeclaration * member, char * classIdentifier) {
 	logDebugging(_logger, "Computing member declaration...");
 
 	if (member == NULL) {
@@ -234,11 +336,15 @@ ComputationResult computeMemberDeclaration(MemberDeclaration * member) {
 
 		case METHOD_MEMBER:
 			logDebugging(_logger, "Member: METHOD_MEMBER");
-			return computeMethodDeclaration(member->methodDeclaration);
+			return computeMethodDeclaration(member->methodDeclaration, classIdentifier);
 
 		case CONSTRUCTOR_MEMBER:
 			logDebugging(_logger, "Member: CONSTRUCTOR_MEMBER");
-			return computeMethodDeclaration(member->methodDeclaration);
+			char * id = "constructor";
+			int length = 11 + 1;
+			member->methodDeclaration->identifier = malloc(sizeof(char) * length);
+			strcpy(member->methodDeclaration->identifier, id);
+			return computeMethodDeclaration(member->methodDeclaration, classIdentifier);
 
 		case DESTRUCTOR_MEMBER:
 			logDebugging(_logger, "Member: DESTRUCTOR_MEMBER");
@@ -252,6 +358,7 @@ ComputationResult computeMemberDeclaration(MemberDeclaration * member) {
 
 ComputationResult computeFieldDeclaration(FieldDeclaration * field) {
 	logDebugging(_logger, "Computing field declaration...");
+	bool allSucceeded = true;
 
 	if (field == NULL) {
 		logError(_logger, "computeFieldDeclaration: field is NULL.");
@@ -261,6 +368,10 @@ ComputationResult computeFieldDeclaration(FieldDeclaration * field) {
 	if (field->typeSpecifier != NULL) {
 		logDebugging(_logger, "Field type: %d", field->typeSpecifier->type);
 		if (field->typeSpecifier->type == IDENTIFIER_TYPE && field->typeSpecifier->identifier != NULL) {
+			if(hash_map_get(_cs->globalTable, field->typeSpecifier->identifier) == NULL) {
+				logError(_logger, "computeFieldDeclaration: variable type unkown");
+				allSucceeded = false;
+			}
 			logDebugging(_logger, "Field named type identifier: %s", field->typeSpecifier->identifier);
 		}
 	}
@@ -269,7 +380,6 @@ ComputationResult computeFieldDeclaration(FieldDeclaration * field) {
 		logDebugging(_logger, "Field identifier: %s", field->identifier);
 	}
 
-	bool allSucceeded = true;
 	if (field->initializationExpression != NULL) {
 		if (!computeExpression(field->initializationExpression).succeeded)
 			allSucceeded = false;
@@ -279,29 +389,53 @@ ComputationResult computeFieldDeclaration(FieldDeclaration * field) {
 		logDebugging(_logger, "Field is static.");
 	}
   
-  char * key = field->identifier; 
-  if (hash_map_get(_cs->currentScope->symbols, &key) != NULL) {
-    logError(_logger, "Duplicate symbol: %s", field->identifier);
-    allSucceeded = false;
-  } else {
-    logDebugging(_logger, "Inserting new symbol on scope %d", _cs->currentScope->id);
-    
-    SymbolTableValue value = {
-      .type = field->typeSpecifier,
-      .identifier = field->identifier,
-      .initialization = field->initializationExpression
-    };
-    
-    hash_map_put(_cs->currentScope->symbols, &key, &value);
-  }
+    // in this case, where are looking at a field declaration, for example public int a; 
+	char * key = field->identifier; 
+	if (hash_map_get(_cs->currentScope->symbols, &key) != NULL) {
+		logError(_logger, "Duplicate symbol: %s", field->identifier);
+		return _invalidComputation();
+	}
+	logDebugging(_logger, "Inserting new symbol on scope %d", _cs->currentScope->id);
+
+	SymbolTableValue value = {
+		.type = field->typeSpecifier,
+		.entryType = FIELD,
+		.isStatic = field->isStatic,
+		.identifier = field->identifier,
+		.initialization = field->initializationExpression
+	};
+
+	hash_map_put(_cs->currentScope->symbols, &key, &value);
 
 	return allSucceeded ? _ok() : _invalidComputation();
 }
 
-ComputationResult computeMethodDeclaration(MethodDeclaration * method) {
+static MemberDeclaration* add_method_to_class_rec(MemberDeclaration * method, MethodDeclaration * method_to_add, bool* duplicated, char * classIdentifier) {
+	if(method == NULL) {
+		method = (MemberDeclaration*)calloc(1, sizeof(MemberDeclaration));
+		logDebugging(_logger, "Adding method %s", method_to_add->identifier);
+		method->methodDeclaration = method_to_add;
+		return method;
+	}
+	if(strcmp(method->methodDeclaration->identifier, method_to_add->identifier) == 0) {
+		logError(_logger, "computeMethodDeclaration: method already defined inside class %s", classIdentifier);
+		*duplicated = true;
+		return method;
+	}
+	method->next = add_method_to_class_rec(method->next, method_to_add, duplicated, classIdentifier);
+	return method;
+}
+
+ComputationResult computeMethodDeclaration(MethodDeclaration * method, char * classIdentifier) {
 	logDebugging(_logger, "Computing method declaration...");
 
-  pushNewScope();
+	if(hash_map_get(_cs->globalTable, &classIdentifier) == NULL) {
+		logError(_logger, "computeMethodDeclaration: class %s not defined", classIdentifier);
+		return _invalidComputation();
+	}
+
+ 	pushNewScope();
+	bool allSucceeded = true;
 
 	if (method == NULL) {
 		logError(_logger, "computeMethodDeclaration: method is NULL.");
@@ -314,11 +448,14 @@ ComputationResult computeMethodDeclaration(MethodDeclaration * method) {
 	if (method->returnType != NULL) {
 		logDebugging(_logger, "Method return type: %d", method->returnType->type);
 		if (method->returnType->type == IDENTIFIER_TYPE && method->returnType->identifier != NULL) {
+			if(hash_map_get(_cs->globalTable, &method->returnType->identifier) == NULL) {
+				logError(_logger, "computeMethodDeclaration: unknow return type");
+				allSucceeded = false;
+			} 
 			logDebugging(_logger, "Method return type identifier: %s", method->returnType->identifier);
 		}
 	}
 
-	bool allSucceeded = true;
 	if (method->parameterList != NULL) {
 		if (!computeParameterList(method->parameterList).succeeded)
 			allSucceeded = false;
@@ -333,7 +470,20 @@ ComputationResult computeMethodDeclaration(MethodDeclaration * method) {
 
 	if (method->isStatic) logDebugging(_logger, "Method is static.");
 
-  popAndDestroyScope();
+	char * key = method->identifier;
+
+	SymbolTableValue* classEntry;
+
+	if ((classEntry = (SymbolTableValue*)hash_map_get(_cs->globalTable, &classIdentifier)) == NULL) {
+		logError(_logger, "computeMethodDeclaration: no class %s found", classIdentifier);
+		return _invalidComputation();
+	}
+	
+	logDebugging(_logger, "Inserting new method on class %s scope", classIdentifier);
+	bool duplicated = false;
+	// We add the method to the class entry on the symbol table
+	classEntry->methods = add_method_to_class_rec(classEntry->methods, method, &duplicated, classIdentifier);
+  	popAndDestroyScope();
 	return allSucceeded ? _ok() : _invalidComputation();
 }
 
@@ -345,8 +495,13 @@ ComputationResult computeParameterList(Parameter * params) {
 	while (p != NULL) {
 		if (p->typeSpecifier != NULL) {
 			logDebugging(_logger, "Parameter type: %d", p->typeSpecifier->type);
-			if (p->typeSpecifier->type == IDENTIFIER_TYPE && p->typeSpecifier->identifier != NULL)
+			if (p->typeSpecifier->type == IDENTIFIER_TYPE && p->typeSpecifier->identifier != NULL) {
+				if(hash_map_get(_cs->globalTable, p->typeSpecifier->identifier) == NULL) {
+					logError(_logger, "computeParameterList: parameter type not found");
+					allSucceeded = false;
+				}
 				logDebugging(_logger, "Parameter type identifier: %s", p->typeSpecifier->identifier);
+			}
 		}
 		if (p->identifier != NULL)
 			logDebugging(_logger, "Parameter identifier: %s", p->identifier);
@@ -360,6 +515,7 @@ ComputationResult computeParameterList(Parameter * params) {
       
       SymbolTableValue value = {
         .type = p->typeSpecifier,
+		.entryType = FIELD,
         .identifier = p->identifier,
         .initialization = NULL,
       };
@@ -388,30 +544,30 @@ ComputationResult computeStatement(Statement * statement) {
 			break;
 
 		case DECLARATION_STATEMENT:
-    case INITIALIZED_DECLARATION_STATEMENT:
+    	case INITIALIZED_DECLARATION_STATEMENT:
 			logDebugging(_logger, "Statement: DECLARATION_STATEMENT");
 			if (statement->typeSpecifier != NULL)
 				logDebugging(_logger, "Declaration type: %d", statement->typeSpecifier->type);
 			if (statement->identifier != NULL)
 				logDebugging(_logger, "Declaration identifier: %s", statement->identifier);
       
-      {
-        char * key = statement->identifier; 
-        if (hash_map_get(_cs->currentScope->symbols, &key) != NULL) {
-          logError(_logger, "Duplicate symbol: %s", statement->identifier);
-          allSucceeded = false;
-        } else {
-          logDebugging(_logger, "Inserting new symbol on scope %d", _cs->currentScope->id);
-          
-          SymbolTableValue value = {
-            .type = statement->typeSpecifier,
-            .identifier = statement->identifier,
-            .initialization = statement->expression
-          };
-          
-          hash_map_put(_cs->currentScope->symbols, &key, &value);
-        }
-      }
+			{
+				char * key = statement->identifier; 
+				if (hash_map_get(_cs->currentScope->symbols, &key) != NULL) {
+					logError(_logger, "Duplicate symbol: %s", statement->identifier);
+					allSucceeded = false;
+				} else {
+				logDebugging(_logger, "Inserting new symbol on scope %d", _cs->currentScope->id);
+				
+				SymbolTableValue value = {
+					.type = statement->typeSpecifier,
+					.identifier = statement->identifier,
+					.initialization = statement->expression
+				};
+				
+				hash_map_put(_cs->currentScope->symbols, &key, &value);
+				}
+			}
 			break;
 
 		case RETURN_STATEMENT:
@@ -606,26 +762,99 @@ ComputationResult computeExpression(Expression *expression) {
       if (expression->rightExpression && !computeExpression(expression->rightExpression).succeeded)
           allSucceeded = false;
       break;
-
     case FUNCTION_CALL:
-      logDebugging(_logger, "Expression: FUNCTION_CALL");
-      if (expression->argumentList &&
-          !computeArgumentList(expression->argumentList).succeeded)
-          allSucceeded = false;
-      break;
-
-    case IDENTIFIER_EXPRESSION:
-      {
-        StackADT pusher = createStack(sizeof(Scope*));
+      	logDebugging(_logger, "Expression: FUNCTION_CALL");
+		if(expression->precedingExpression == NULL) {
+			SymbolTableValue * functionEntry = (SymbolTableValue*)hash_map_get(_cs->globalTable, expression->identifier);
+			if(functionEntry == NULL) {
+				logError(_logger, "computeExpression: no %s function defined", expression->identifier);
+				allSucceeded = false;
+			}
+		} else {
+			TypeSpecifier * variableType = NULL;
+			StackADT pusher = createStack(sizeof(Scope*));
          
+			char * key = expression->precedingExpression->leftExpression->identifier;
+			bool found1 = 0;
+			while (!isEmptyStack(_cs->scopeStack) && !found1) {
+				Scope * scope = (Scope*) popScope();
+				HashMapADT symbols = scope->symbols;
+
+				SymbolTableValue * fieldEntry;
+				if ((fieldEntry = hash_map_get(symbols, &key)) != NULL) {
+					variableType = fieldEntry->type;
+					found1 = 1;
+				}
+				pushStack(pusher, &scope);
+			}
+			
+			while (!isEmptyStack(pusher)) {
+				Scope * scope;
+				popStack(pusher, &scope);
+				logDebugging(_logger, "Restoring scope id %d into the stack", scope->id);
+				
+				pushStack(_cs->scopeStack, &scope);
+			}
+			
+			freeStack(pusher);
+			
+			SymbolTableValue * classEntry;
+			bool isStatic;
+			if(variableType == NULL) {
+				classEntry = (SymbolTableValue*)hash_map_get(_cs->globalTable, &expression->precedingExpression->leftExpression->identifier);
+			} else {
+				classEntry = (SymbolTableValue*)hash_map_get(_cs->globalTable, &(variableType->identifier));
+			}
+		
+			MemberDeclaration * methods = classEntry->methods;
+			bool found2 = false;
+			if(methods != NULL && expression->precedingExpression->leftExpression->typeSpeficier == NULL) {
+				TypeSpecifier * typeSpec = calloc(1, sizeof(TypeSpecifier));
+				typeSpec->type = IDENTIFIER_TYPE;
+				typeSpec->identifier = classEntry->identifier;
+				expression->precedingExpression->leftExpression->typeSpeficier = typeSpec;
+			}
+			while(methods != NULL && !found2) {
+				if(strcmp(expression->precedingExpression->rightExpression->identifier, methods->methodDeclaration->identifier) == 0) {
+					logDebugging(_logger, "Method %s found", methods->methodDeclaration->identifier);
+					isStatic = methods->methodDeclaration->isStatic;
+					found2 = 1;
+				}
+				methods = methods->next;
+			}
+			if (!found1 && !isStatic) {
+				logError(_logger, "Unidentified symbol: %s", key);
+				allSucceeded = false;
+			}
+
+			if(!found2) {
+				logError(_logger, "computeExpression: method %s not found", expression->precedingExpression->rightExpression->identifier);
+			}
+		}
+
+		if (expression->argumentList &&
+			!computeArgumentList(expression->argumentList).succeeded)
+			allSucceeded = false;
+		break;
+    case IDENTIFIER_EXPRESSION:
+		logDebugging(_logger, "Expression: IDENTIFIER_EXPRESSION for expression %s", expression->identifier);
+        StackADT pusher = createStack(sizeof(Scope*));
+        
         char * key = expression->identifier;
-        unsigned short found = 0;
+        bool found = 0;
         while (!isEmptyStack(_cs->scopeStack) && !found) {
           Scope * scope = (Scope*) popScope();
           HashMapADT symbols = scope->symbols;
-          if (hash_map_get(symbols, &key) != NULL) {
-            found = 1;  
+
+		  SymbolTableValue * fieldEntry;
+          if ((fieldEntry = hash_map_get(symbols, &key)) != NULL) {
+			TypeSpecifier * typeSpec = calloc(1, sizeof(TypeSpecifier));
+			typeSpec->type = IDENTIFIER_TYPE;
+			typeSpec->identifier = fieldEntry->identifier;
+			expression->typeSpeficier = typeSpec;
+            found = 1;
           }
+
           pushStack(pusher, &scope);
         }
         
@@ -633,6 +862,7 @@ ComputationResult computeExpression(Expression *expression) {
           Scope * scope;
           popStack(pusher, &scope);
           logDebugging(_logger, "Restoring scope id %d into the stack", scope->id);
+		  
           pushStack(_cs->scopeStack, &scope);
         }
         
@@ -641,7 +871,6 @@ ComputationResult computeExpression(Expression *expression) {
           logError(_logger, "Unidentified symbol: %s", key);
           allSucceeded = false;
         }
-      }
       break;
 
     case INTEGER_EXPRESSION:

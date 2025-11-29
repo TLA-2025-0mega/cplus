@@ -145,6 +145,7 @@ struct Expression {
 		struct {
 			char * identifier;
 			ArgumentList * argumentList;
+			TypeSpecifier * typeSpeficier;
 			union {
 				struct {
 					char * stringLiteralValue;
@@ -198,7 +199,7 @@ struct FieldDeclaration {
 	TypeSpecifier * typeSpecifier;
 	char * identifier;
 	Expression * initializationExpression;
-	int isStatic;
+	bool isStatic;
 };
 
 struct MethodDeclaration {
@@ -206,7 +207,7 @@ struct MethodDeclaration {
 	char * identifier;
 	Parameter * parameterList;
 	Statement * statementList;
-	int isStatic;
+	bool isStatic;
 };
 
 struct Statement {
